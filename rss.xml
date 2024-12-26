@@ -1,0 +1,573 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>iMIKI.moe</title><description>ppppr</description><link>https://blog.imiku.moe/</link><language>zh_CN</language><item><title>值接收器和指针接收器</title><link>https://blog.imiku.moe/posts/receiver_of_go_method/</link><guid isPermaLink="true">https://blog.imiku.moe/posts/receiver_of_go_method/</guid><pubDate>Wed, 27 Nov 2024 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;值接收器和指针接收器&lt;/h1&gt;
+&lt;h2&gt;你这 interface 怎么看都有问题&lt;/h2&gt;
+&lt;h3&gt;场景&lt;/h3&gt;
+&lt;p&gt;有这样一个结构体，包含一个整数字段、2个指针接收器和2个值接收器：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;type s struct {
+	v int
+}
+
+func (t *s) fn1() {
+	t.v = 1
+}
+
+func (t *s) fn2() {
+	t.v = 2
+}
+
+func (t s) fn3() {
+	t.v = 3
+}
+
+func (t s) fn4() {
+	t.v = 4
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;现在尝试将这个结构体和他的指针转换到以下3种interface&lt;/p&gt;
+&lt;h4&gt;Scene 1&lt;/h4&gt;
+&lt;pre&gt;&lt;code&gt;type i1 interface {
+	fn1()
+	fn2()
+}
+var a i1 = s{v: 0} // not OK
+var a i1 = &amp;amp;s{v: 0} // OK
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h4&gt;Scene 2&lt;/h4&gt;
+&lt;pre&gt;&lt;code&gt;type i2 interface {
+	fn1()
+	fn3()
+}
+
+var a i2 = s{v: 0} // not OK
+var a i2 = &amp;amp;s{v: 0} // OK
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h4&gt;Scene 3&lt;/h4&gt;
+&lt;pre&gt;&lt;code&gt;type i3 interface {
+	fn3()
+	fn4()
+}
+
+var a i3 = s{v: 0} // OK
+var a i3 = &amp;amp;s{v: 0} // OK
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;根据上面场景，可以发现：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;接收器1&lt;/th&gt;
+&lt;th&gt;接收器2&lt;/th&gt;
+&lt;th&gt;调用者&lt;/th&gt;
+&lt;th&gt;有效&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;否&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;是&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;否&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;是&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;是&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;值&lt;/td&gt;
+&lt;td&gt;指针&lt;/td&gt;
+&lt;td&gt;是&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;看起来就像是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;调用者是指针，实现接口时，值接收器 &lt;strong&gt;会&lt;/strong&gt; 被当作有效的实现；&lt;/p&gt;
+&lt;p&gt;调用者是值，实现接口时指针接收器 &lt;strong&gt;不会&lt;/strong&gt; 被当作有效的实现。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3&gt;原因&lt;/h3&gt;
+&lt;p&gt;首先我们简化一下结构体方便我们观察：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;type s2 struct {
+	v int
+}
+
+//go:noinline
+func (t *s) fn1() { // 这个是个指针接收器
+	t.v = 1
+}
+
+//go:noinline
+func (t s) fn2() { // 这个是个值接收器
+	t.v = 2
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;使用&lt;code&gt;go tool compile -S ./main.go&lt;/code&gt;将代码转换为plan9汇编，
+我们可以看到go编译器生成了3个函数（不是2个也不是4个）：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;// func (t *s) fn1()
+TEXT    main.(*s2).fn1(SB), NOSPLIT|NOFRAME|ABIInternal, $0-8
+...
+
+// func (t s) fn2()
+TEXT    main.s2.fn2(SB), NOSPLIT|NOFRAME|ABIInternal, $0-8
+...
+
+// 编译器确实生成了一个 func (t *s) fn2()
+TEXT    main.(*s2).fn2(SB), DUPOK|WRAPPER|ABIInternal, $24-8
+...
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;所以根本的原因是：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;值接收器会自动生成一个指针接收器，指针接收器不会生成值接收器&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;所以无论interface的实现函数是指针还是值接收器，只要我们无脑使用结构体的指针，就一定能达到我们想要的效果了......吗？&lt;/p&gt;
+&lt;p&gt;那肯定是不行的，毕竟IDE都会告诉我们：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Goland:&lt;/p&gt;
+&lt;p&gt;Struct s2 has methods on both value and pointer receivers. Such usage is not recommended by the Go Documentation.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;那么这两种使用到底有什么不一样呢？&lt;/p&gt;
+&lt;h2&gt;&lt;/h2&gt;
+&lt;p&gt;依然是使用这个简化的结构体：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;type s2 struct {
+	v int
+}
+
+//go:noinline
+func (t *s2) fn1() { // 这个是个指针接收器
+	t.v = 1
+}
+
+//go:noinline
+func (t s2) fn2() { // 这个是个值接收器
+	t.v = 2
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;再次使用&lt;code&gt;go tool compile -S ./main.go&lt;/code&gt;将代码转换为plan9汇编，
+然后我们再一个一个的观察&lt;/p&gt;
+&lt;h3&gt;编译后的函数&lt;/h3&gt;
+&lt;h4&gt;func (t *s) fn1()&lt;/h4&gt;
+&lt;pre&gt;&lt;code&gt;0x0000 00000    TEXT    main.(*s2).fn1(SB), NOSPLIT|NOFRAME|ABIInternal, $0-8
+0x0000 00000    MOVQ    AX, main.t+8(SP)     // *t 拷贝到栈
+0x0005 00005    TESTB   AL, (AX)             // 检查低位是否为 0
+0x0007 00007    MOVQ    $1, (AX)             // t.v = 1
+0x000e 00014    RET
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这里的 AX 内是一个指针，可以看到，第二个 MOVQ 修改的是 AX 指向的值，
+所以修改会导致原本在 AX 中的值变化&lt;/p&gt;
+&lt;h4&gt;func (t s) fn2()&lt;/h4&gt;
+&lt;pre&gt;&lt;code&gt;0x0000 00000    TEXT    main.s2.fn2(SB), NOSPLIT|NOFRAME|ABIInternal, $0-8
+0x0000 00000    MOVQ    AX, main.t+8(SP)    // t 拷贝到栈
+0x0005 00005    MOVQ    $2, main.t+8(SP)    // 为栈中的 t.v 赋值2
+0x000e 00014    RET
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这里的 AX 内是一个结构体（这段代码里面实际是一个 int），这里的第二个 MOVQ 修改的是 AX 拷贝到函数栈中的值，
+函数结束时就会被删除，所以不会导致 AX 中的值产生变化&lt;/p&gt;
+&lt;h4&gt;func (t *s) fn2()&lt;/h4&gt;
+&lt;p&gt;从上面我们知道，这个&lt;code&gt;func (t *s) fn2()&lt;/code&gt;是编译器自己生成出来的，
+但是他的函数内容确实和前面...可以说完全不一样，
+将其中进行栈伸缩和异常检查的代码去掉后，得到一份精简后的代码&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;0x0000 00000    TEXT    main.(*s2).fn2(SB), DUPOK|WRAPPER|ABIInternal, $24-8
+0x0006 00006    PUSHQ   BP
+0x0007 00007    MOVQ    SP, BP
+0x000a 00010    SUBQ    $16, SP                   // 准备2字节的栈空间
+0x000e 00014    MOVQ    32(R14), R12
+0x0017 00023    MOVQ    AX, main.t+32(SP)         // 从AX读取参数 *t
+0x0027 00039    TESTB   AL, (AX)
+0x0029 00041    MOVQ    (AX), AX                  // 获取 *t 指向的值
+0x002c 00044    MOVQ    AX, main..autotmp_1+8(SP) // 拷贝到栈空间
+0x0031 00049    CALL    main.s2.fn2(SB)           // 调用真实的函数
+0x0036 00054    ADDQ    $16, SP
+0x003a 00058    POPQ    BP
+0x003b 00059    RET
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在这个函数中，第四个 MOVQ 将原本 AX 中的指针变成了函数栈中的值，然后由 CALL 传给了真正的 main.s2.fn2(SB)，
+所以这个中间函数实际上就是负责制造一个指针指向的值的拷贝。&lt;/p&gt;
+&lt;p&gt;翻译成go，其实就是很简单一句：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;func (s *s2) fn2() {
+  return (*s).fn2()
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h3&gt;函数的使用&lt;/h3&gt;
+&lt;p&gt;现在我们使用一个main函数来使用它的method&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;func main () {
+	t1 := &amp;amp;s2{}
+	t1.fn1()
+	t1.fn2()
+	t2 := s2{}
+	t2.fn1()
+	t2.fn2()
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;同样，将代码转换为plan9汇编，并将其中进行栈伸缩和异常检查的代码去掉后，
+得到一份精简后的代码&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;0x0000 00000    TEXT    main.main(SB), ABIInternal, $56-0
+0x0006 00006    PUSHQ   BP
+0x0007 00007    MOVQ    SP, BP
+0x000a 00010    SUBQ    $48, SP
+// 初始化第一个 s2{}
+0x000e 00014    MOVQ    $0, main..autotmp_3+24(SP)
+// t1.fn1()
+0x0017 00023    LEAQ    main..autotmp_3+24(SP), AX // 获取第一个 s2{} 的地址到 AX 中
+0x001c 00028    MOVQ    AX, main..autotmp_2+40(SP)
+0x0021 00033    TESTB   AL, (AX)
+0x0023 00035    MOVQ    $0, (AX)                   // 再次赋值0（？）
+0x002a 00042    MOVQ    AX, main.t1+32(SP)         // 保存 AX 内容到栈上
+0x002f 00047    CALL    main.(*s2).fn1(SB)         // 调用函数
+// t1.fn2()
+0x0034 00052    MOVQ    main.t1+32(SP), CX         // 取出刚刚的 AX
+0x0039 00057    TESTB   AL, (CX)
+0x003b 00059    MOVQ    (CX), AX                   // 取出 *t 指向的内容
+0x003e 00062    MOVQ    AX, main..autotmp_4+16(SP) // 保存 AX 内容到栈上
+0x0043 00067    CALL    main.s2.fn2(SB)            // 调用函数
+// 初始化第二个 s2{}
+0x0048 00072    MOVQ    $0, main.t2+8(SP)
+// t2.fn1()
+0x0051 00081    LEAQ    main.t2+8(SP), AX          // 获取第二个 s2{} 的地址到 AX 中
+0x0056 00086    CALL    main.(*s2).fn1(SB)         // 调用函数
+// t2.fn2()
+0x005b 00091    MOVQ    main.t2+8(SP), AX          // 获取第二个 s2{} 的值到 AX 中
+0x0060 00096    CALL    main.s2.fn2(SB)            // 调用函数
+
+0x0065 00101    ADDQ    $48, SP
+0x0069 00105    POPQ    BP
+0x006a 00106    RET
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;所以上面原本的代码翻译一下就是：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;func main () {
+	t1 := &amp;amp;s2{}
+	t1.fn1()
+	(*t1).fn2()
+	t2 := s2{}
+	(&amp;amp;t2).fn1()
+	t2.fn2()
+}
+&lt;/code&gt;&lt;/pre&gt;
+</content:encoded></item><item><title>Deep Copy</title><link>https://blog.imiku.moe/posts/deep_copy/</link><guid isPermaLink="true">https://blog.imiku.moe/posts/deep_copy/</guid><pubDate>Mon, 24 Jun 2024 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;Deep Copy&lt;/h1&gt;
+&lt;p&gt;为解决循环指针而设计的深度拷贝，目前 &lt;code&gt;chan&lt;/code&gt;/&lt;code&gt;map&lt;/code&gt;/&lt;code&gt;func&lt;/code&gt; 还没有实现。&lt;/p&gt;
+&lt;h2&gt;源码&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;package main
+
+import (
+	&quot;reflect&quot;
+)
+
+func DeepCopy[T any](src, dst *T) {
+	srv := reflect.ValueOf(src)
+	srv = srv.Elem()
+	drv := reflect.ValueOf(dst)
+	drv = drv.Elem()
+	addrMap := map[uint64]reflect.Value{}
+	handleStruct(srv, drv, addrMap)
+}
+
+func genKey(src reflect.Value) uint64 {
+	switch src.Kind() {
+	case reflect.Pointer, reflect.Chan, reflect.Map, reflect.UnsafePointer, reflect.Func, reflect.Slice:
+		return uint64(src.Pointer())&amp;lt;&amp;lt;6 + uint64(src.Kind())&amp;lt;&amp;lt;1
+	default:
+		return uint64(src.UnsafeAddr())&amp;lt;&amp;lt;6 + uint64(src.Kind())&amp;lt;&amp;lt;1 + 1
+	}
+}
+
+func handlePointer(src, dst reflect.Value, addrMap map[uint64]reflect.Value) {
+	src = src.Elem()
+	addr := genKey(src)
+	ndst, ok := addrMap[addr]
+	if !ok {
+		ndst = reflect.New(src.Type()).Elem()
+		addrMap[addr] = ndst
+		switch src.Kind() {
+		case reflect.Struct:
+			handleStruct(src, ndst, addrMap)
+		case reflect.Interface:
+			handleInterface(src, ndst, addrMap)
+		case reflect.Pointer:
+			handlePointer(src, ndst, addrMap)
+		case reflect.Array:
+			handleArray(src, ndst, addrMap)
+		case reflect.Slice:
+			handleSlice(src, ndst, addrMap)
+		case reflect.Chan:
+		case reflect.Func:
+		case reflect.Map:
+		default:
+			ndst.Set(src)
+		}
+	}
+	dst.Set(ndst.Addr())
+}
+
+func handleStruct(src, dst reflect.Value, addrMap map[uint64]reflect.Value) {
+	addrMap[genKey(src)] = dst
+	for i := 0; i &amp;lt; src.NumField(); i++ {
+		srcf := src.Field(i)
+		addr := genKey(srcf)
+		dstf, ok := addrMap[addr]
+		if !ok {
+			ndstf := dst.Field(i)
+			addrMap[addr] = ndstf
+			switch srcf.Kind() {
+			case reflect.Struct:
+				handleStruct(srcf, ndstf, addrMap)
+			case reflect.Interface:
+				handleInterface(srcf, ndstf, addrMap)
+			case reflect.Pointer:
+				handlePointer(srcf, ndstf, addrMap)
+			case reflect.Array:
+				handleArray(srcf, ndstf, addrMap)
+			case reflect.Slice:
+				handleSlice(srcf, ndstf, addrMap)
+			case reflect.Chan:
+			case reflect.Func:
+			case reflect.Map:
+			default:
+				ndstf.Set(srcf)
+			}
+		} else {
+			dst.Field(i).Set(dstf)
+		}
+	}
+}
+
+func handleInterface(src, dst reflect.Value, addrMap map[uint64]reflect.Value) {
+	src = src.Elem()
+	switch src.Kind() {
+	case reflect.Struct:
+		handleStruct(src, dst, addrMap)
+	case reflect.Interface:
+		handleInterface(src, dst, addrMap)
+	case reflect.Pointer:
+		handlePointer(src, dst, addrMap)
+	case reflect.Array:
+		handleArray(src, dst, addrMap)
+	case reflect.Slice:
+		handleSlice(src, dst, addrMap)
+	case reflect.Chan:
+	case reflect.Func:
+	case reflect.Map:
+	default:
+		dst.Set(src)
+	}
+}
+
+func handleArray(src, dst reflect.Value, addrMap map[uint64]reflect.Value) {
+	for i := 0; i &amp;lt; src.Len(); i++ {
+		srcf := src.Index(i)
+		addr := genKey(srcf)
+		dstf, ok := addrMap[addr]
+		if !ok {
+			ndstf := dst.Index(i)
+			addrMap[addr] = ndstf
+			switch srcf.Kind() {
+			case reflect.Struct:
+				handleStruct(srcf, ndstf, addrMap)
+			case reflect.Interface:
+				handleInterface(srcf, ndstf, addrMap)
+			case reflect.Pointer:
+				handlePointer(srcf, ndstf, addrMap)
+			case reflect.Array:
+				handleArray(srcf, ndstf, addrMap)
+			case reflect.Slice:
+				handleSlice(srcf, ndstf, addrMap)
+			case reflect.Chan:
+			case reflect.Func:
+			case reflect.Map:
+			default:
+				ndstf.Set(srcf)
+			}
+		} else {
+			dst.Index(i).Set(dstf)
+		}
+	}
+}
+
+func handleSlice(src, dst reflect.Value, addrMap map[uint64]reflect.Value) {
+	addrMap[genKey(src)] = dst
+	dst.Grow(src.Len() - dst.Len())
+	dst.SetLen(src.Len())
+	for i := 0; i &amp;lt; src.Len(); i++ {
+		srcf := src.Index(i)
+		addr := genKey(srcf)
+		dstf, ok := addrMap[addr]
+		if !ok {
+			ndstf := dst.Index(i)
+			addrMap[addr] = ndstf
+			switch srcf.Kind() {
+			case reflect.Struct:
+				handleStruct(srcf, ndstf, addrMap)
+			case reflect.Interface:
+				handleInterface(srcf, ndstf, addrMap)
+			case reflect.Pointer:
+				handlePointer(srcf, ndstf, addrMap)
+			case reflect.Array:
+				handleArray(srcf, ndstf, addrMap)
+			case reflect.Slice:
+				handleSlice(srcf, ndstf, addrMap)
+			case reflect.Chan:
+			case reflect.Func:
+			case reflect.Map:
+			default:
+				ndstf.Set(srcf)
+			}
+		} else {
+			dst.Index(i).Set(dstf)
+		}
+	}
+}
+&lt;/code&gt;&lt;/pre&gt;
+</content:encoded></item><item><title>LMDB - 低gc压力缓存</title><link>https://blog.imiku.moe/posts/lmdb/</link><guid isPermaLink="true">https://blog.imiku.moe/posts/lmdb/</guid><pubDate>Mon, 24 Jun 2024 00:00:00 GMT</pubDate><content:encoded>&lt;h1&gt;LMDB - 低gc压力缓存&lt;/h1&gt;
+&lt;p&gt;在Golang中创建一个缓存库最头痛的问题就是gc，大家也集思广益地想出了各种避免的办法，
+今天看到了一个比较巧妙的思想，就想要实现一下试试看。&lt;/p&gt;
+&lt;h2&gt;原理&lt;/h2&gt;
+&lt;p&gt;Golang中的保存一个变量，第一个的想法都是直接new一个，然后将地址保存在内存中的map里面，
+这样的问题就是gc每次都会去扫描map中的指针指向的值，在map中东西特别多的时候，gc效率将会严重下降。&lt;/p&gt;
+&lt;p&gt;这个方法的实现中，我也是简单的将指针保存在map中，不一样的是，指针不是new出来的，而是变量的地址。
+这个方法中，向Set一个变量而不是指针，然后将变量复制到lmdb中的数组里，然后取出其在数组中的变量的地址，
+再放入map中保存，后续使用时就直接从map中取出这个指针就行。&lt;/p&gt;
+&lt;p&gt;由于每个指针指向的值实际上保留在数组中，gc扫描将不会去检查指针指向的值，又因为指针本身实际是简单的uintptr，
+整个map将直接不被扫描，效率将大大提高&lt;/p&gt;
+&lt;h2&gt;实例源代码&lt;/h2&gt;
+&lt;pre&gt;&lt;code&gt;package lmdb
+
+const defaultFragmentCount = 128
+const fragmentSize = 128
+
+type LMDBIndex struct {
+	Fragment uint
+	Index    uint
+}
+
+type Item[T any] struct {
+	realItem T
+	deleted  bool
+}
+
+type Items[T any] struct {
+	items        []Item[T]
+	deletedCount uint
+}
+
+type LMDB[K comparable, V any] struct {
+	length  uint
+	m       map[K]LMDBIndex
+	storage []Items[V]
+}
+
+func NewLMDB[K comparable, V any]() *LMDB[K, V] {
+	return &amp;amp;LMDB[K, V]{
+		length:  0,
+		m:       make(map[K]LMDBIndex),
+		storage: make([]Items[V], 0, defaultFragmentCount),
+	}
+}
+
+func (m *LMDB[K, V]) Get(key K) (*V, bool) {
+	index, ok := m.m[key]
+	if !ok {
+		return nil, false
+	}
+
+	t := m.storage[index.Fragment].items[index.Index]
+	return &amp;amp;t.realItem, true
+}
+
+func (m *LMDB[K, V]) getNextIndex() LMDBIndex {
+	for fi, fragment := range m.storage {
+		if fragment.deletedCount == 0 {
+			continue
+		}
+
+		for ii := range fragmentSize {
+			if ii &amp;gt;= len(fragment.items) {
+				fragment.items = append(fragment.items, Item[V]{deleted: true})
+				m.storage[fi] = fragment
+				return LMDBIndex{
+					Fragment: uint(fi),
+					Index:    uint(ii - 1),
+				}
+			}
+			item := fragment.items[ii]
+			if !item.deleted {
+				continue
+			}
+			return LMDBIndex{
+				Fragment: uint(fi),
+				Index:    uint(ii - 1),
+			}
+		}
+	}
+
+	m.storage = append(m.storage, Items[V]{
+		items:        make([]Item[V], 1, fragmentSize),
+		deletedCount: fragmentSize,
+	})
+
+	return LMDBIndex{
+		Fragment: uint(len(m.storage) - 1),
+		Index:    0,
+	}
+}
+
+func (m *LMDB[K, V]) Set(key K, value V) {
+	index, ok := m.m[key]
+	if ok {
+		m.storage[index.Fragment].items[index.Index] = Item[V]{
+			realItem: value,
+			deleted:  false,
+		}
+	} else {
+		index = m.getNextIndex()
+		m.m[key] = index
+		fragment := m.storage[index.Fragment]
+		fragment.items[index.Index] = Item[V]{
+			realItem: value,
+			deleted:  false,
+		}
+		m.storage[index.Fragment] = fragment
+	}
+	m.length++
+}
+
+func (m *LMDB[K, V]) Delete(key K) {
+	index, ok := m.m[key]
+	if !ok {
+		return
+	}
+	fragment := m.storage[index.Fragment]
+	fragment.items[index.Index] = Item[V]{
+		deleted: true,
+	}
+	fragment.deletedCount++
+	m.storage[index.Fragment] = fragment
+	m.length--
+	delete(m.m, key)
+}
+
+func (m *LMDB[K, V]) Len() uint {
+	return m.length
+}
+
+type TestStruct struct {
+	Str string
+	Num int
+}
+&lt;/code&gt;&lt;/pre&gt;
+</content:encoded></item></channel></rss>
